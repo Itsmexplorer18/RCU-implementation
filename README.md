@@ -105,38 +105,7 @@ After:    predecessor → [K:17, V:13] → rest...
 
 ---
 
-## The RCU Philosophy
-
-| Principle | Detail |
-|---|---|
-| Readers see consistent state | Always old OR new — never half-updated |
-| Atomic pointer swap | A single pointer write is atomic on all common hardware |
-| No reader locks | Readers are fast, scalable, zero-overhead |
-| Writer coordination | Writers lock each other — but NOT readers |
-| Wait before free | Must wait for old readers before reclaiming memory |
-
----
-
-## Why No Locks for Readers?
-
-- **Time cost** — acquiring even a "fast" lock has overhead
-- **Space cost** — a lock per-object (e.g., Linux directory entries) = megabytes of wasted kernel memory
-- **Scalability** — reader locks create contention; RCU readers scale to any number of CPUs
-
----
 
 
 
-## Quick Reference
 
-| Operation | Steps |
-|---|---|
-| **Insert** | malloc → init fields → set next → atomic HEAD swap |
-| **Delete** | change pointer → wait for readers → free old node |
-| **Modify** | malloc → copy + change fields → set next → atomic pointer swap → wait → free old |
-
-| Term | Meaning |
-|---|---|
-| Read-side critical section | Code between rcu_read_lock() and rcu_read_unlock() |
-| Grace period | Time between pointer update and when it's safe to free old data |
-| Quiescent state | A point where a CPU is definitely not in a read-side critical section |
