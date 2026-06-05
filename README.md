@@ -109,3 +109,40 @@ After:    predecessor → [K:17, V:13] → rest...
 
 
 
+## What is a Grace Period?
+
+A grace period is the window of time the writer waits after making a 
+structural change, before it is safe to free memory.
+
+                    splice-out        free
+                         │              │
+time ────────────────────┼──────────────┼──────────►
+                         │◄────────────►│
+                           grace period
+
+Any reader that started BEFORE the splice-out must finish before 
+the grace period ends. Any reader that starts AFTER the splice-out 
+will never see the old pointer.
+
+synchronize_rcu() is the call that waits for the grace period to elapse.
+
+## Read-Side Critical Section
+
+Readers wrap traversal in read_lock/read_unlock:
+
+    rcu.read_lock();
+    Node* n = head.load(std::memory_order_acquire);
+    while (n) {
+        if (n->value == target) {
+            process(n->value);   // safe — node cannot be freed here
+            break;
+        }
+        n = rcu_dereference(n->next);
+    }
+    rcu.read_unlock();
+
+Between read_lock and read_unlock:
+- No locks are held
+- Other readers run concurrently with zero contention
+- Writers may modify the list — but cannot free any node yet
+- The reader may see the old structure OR the new one — both are valid
