@@ -78,6 +78,28 @@ bool remove(const T& value) {
     }
     return false;
 }
+bool update(const T& old_value, T new_value) {
+    std::unique_lock<std::mutex> ul(update_lock_);
+    Node* prev = nullptr;
+    Node* cur  = head_.load(std::memory_order_relaxed);
+    while (cur != nullptr) {
+        if (cur->value == old_value) {
+            Node* new_node = new Node(std::move(new_value));
+            new_node->next = cur->next;
+            if (prev == nullptr)
+                head_.store(new_node, std::memory_order_release);
+            else
+                prev->next = new_node;
+            ul.unlock();
+            rcu_.synchronize_rcu();
+            delete cur;
+            return true;
+        }
+        prev = cur;
+        cur  = cur->next;
+    }
+    return false;
+}
 
     std::optional<T> find(const T& value) const {
     rcu_.read_lock();
