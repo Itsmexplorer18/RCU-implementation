@@ -18,7 +18,7 @@ public:
     explicit RcuList(RcuImpl& rcu) : head_(nullptr), rcu_(rcu) {}
     using Node = RcuNode<T>;
 
-    RcuList() : head_(nullptr) {}
+    //RcuList() : head_(nullptr) {}
 
     ~RcuList() {
         Node* n = head_.load(std::memory_order_relaxed);
@@ -109,7 +109,7 @@ bool update(const T& old_value, T new_value) {
                 rcu_.read_unlock();
                 return cur->value;
             }
-            cur = __atomic_load_n(&cur->next, __ATOMIC_CONSUME);
+            cur = __atomic_load_n(&cur->next, __ATOMIC_ACQUIRE);
         }
        rcu_.read_unlock();
         return std::nullopt;
