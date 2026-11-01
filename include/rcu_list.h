@@ -17,7 +17,7 @@ class RcuList {
 public:
     explicit RcuList(RcuImpl& rcu) : head_(nullptr), rcu_(rcu) {}
     using Node = RcuNode<T>;
-
+using Handle = typename RcuImpl::Handle;
     //RcuList() : head_(nullptr) {}
 
     ~RcuList() {
@@ -101,28 +101,28 @@ bool update(const T& old_value, T new_value) {
     return false;
 }
 
-    std::optional<T> find(const T& value) const {
-    rcu_.read_lock();
+    std::optional<T> find(const T& value,Handle me) const {
+    rcu_.read_lock(me);
         Node* cur = head_.load(std::memory_order_acquire);
         while (cur) {
             if (cur->value == value) {
-                rcu_.read_unlock();
+                rcu_.read_unlock(me);
                 return cur->value;
             }
             cur = __atomic_load_n(&cur->next, __ATOMIC_ACQUIRE);
         }
-       rcu_.read_unlock();
+       rcu_.read_unlock(me);
         return std::nullopt;
     }
 
-    void for_each(std::function<void(const T&)> fn) const {
-       rcu_.read_lock();
+    void for_each(std::function<void(const T&)> fn,Handle me) const {
+       rcu_.read_lock(me);
     Node* cur = head_.load(std::memory_order_acquire);
     while (cur) {
         fn(cur->value);
         cur = __atomic_load_n(&cur->next, __ATOMIC_ACQUIRE);
     }
-    rcu_.read_unlock();
+    rcu_.read_unlock(me);
     }
 
     size_t size_unsafe() const {
