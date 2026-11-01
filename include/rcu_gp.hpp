@@ -24,25 +24,24 @@ public:
     std::mutex               registry_lock;
     std::vector<ThreadState*> threads;
 
-    thread_local static ThreadState* tls_state;
+    using Handle = ThreadState*;                 // NEW: so RcuList can name the type
 
-    void thread_register() {
+    Handle thread_register() {
         ThreadState* s = new ThreadState();
         std::lock_guard<std::mutex> lg(registry_lock);
         threads.push_back(s);
-        tls_state = s;
+        return s;
     }
 
-    void thread_unregister() {
+    void thread_unregister(Handle s) {
         assert(tls_state != nullptr);
         std::lock_guard<std::mutex> lg(registry_lock);
         tls_state->online = false;
         tls_state->gp_snap.store(UINT64_MAX, std::memory_order_release);
-        tls_state = nullptr;
     }
 
-    void read_lock() {
-        assert(tls_state != nullptr);
+    void read_lock(Handle s) {
+        assert(s != nullptr);
         ThreadState* s = tls_state;
         if (s->nesting++ == 0) {
             s->snap_value = global_gp.load(std::memory_order_acquire);
@@ -50,8 +49,8 @@ public:
         }
     }
 
-    void read_unlock() {
-        assert(tls_state != nullptr);
+    void read_unlock(Handle s) {
+        assert(s != nullptr);
         ThreadState* s = tls_state;
         if (--s->nesting == 0)
             s->gp_snap.store(UINT64_MAX, std::memory_order_release);
@@ -80,7 +79,6 @@ public:
     }
 };
 
-inline thread_local ThreadState* RcuDomain::tls_state = nullptr;
 
 } // namespace gp_rcu
 
