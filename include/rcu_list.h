@@ -8,7 +8,7 @@
 template<typename T>
 struct RcuNode {
     T        value;
-    RcuNode* next{nullptr};
+    std::atomic<RcuNode*>    next{nullptr};     
     explicit RcuNode(T v) : value(std::move(v)) {}
 };
 
@@ -63,11 +63,12 @@ bool remove(const T& value) {
     Node* prev = nullptr;
     Node* cur  = head_.load(std::memory_order_relaxed);
     while (cur != nullptr) {
+        Node* nxt = cur->next;
         if (cur->value == value) {
             if (prev == nullptr)
                 head_.store(cur->next, std::memory_order_release);
             else
-                prev->next = cur->next;  // writers are serialized by update_lock_
+                prev->next.store(nxt, std::memory_order_release);
             ul.unlock();
             rcu_.synchronize_rcu();
             delete cur;
@@ -83,13 +84,15 @@ bool update(const T& old_value, T new_value) {
     Node* prev = nullptr;
     Node* cur  = head_.load(std::memory_order_relaxed);
     while (cur != nullptr) {
+                Node* nxt = cur->next;
+
         if (cur->value == old_value) {
             Node* new_node = new Node(std::move(new_value));
-            new_node->next = cur->next;
+               new_node->next.store(nxt, std::memory_order_relaxed);   
             if (prev == nullptr)
                 head_.store(new_node, std::memory_order_release);
             else
-                prev->next = new_node;
+                prev->next.store(new_node, std::memory_order_release);
             ul.unlock();
             rcu_.synchronize_rcu();
             delete cur;
@@ -109,7 +112,7 @@ bool update(const T& old_value, T new_value) {
                 rcu_.read_unlock(me);
                 return cur->value;
             }
-            cur = __atomic_load_n(&cur->next, __ATOMIC_ACQUIRE);
+            cur = cur->next.load(std::memory_order_acquire);
         }
        rcu_.read_unlock(me);
         return std::nullopt;
@@ -120,7 +123,7 @@ bool update(const T& old_value, T new_value) {
     Node* cur = head_.load(std::memory_order_acquire);
     while (cur) {
         fn(cur->value);
-        cur = __atomic_load_n(&cur->next, __ATOMIC_ACQUIRE);
+        cur=cur->next.load(std::memory_order_acquire);
     }
     rcu_.read_unlock(me);
     }
