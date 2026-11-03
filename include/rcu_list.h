@@ -27,6 +27,7 @@ using Handle = typename RcuImpl::Handle;
 
     void insert(T value) {
         Node* node = new Node(std::move(value));
+        std::lock_guard<std::mutex> lg(update_lock_);
         Node* old_head;
         do {
             old_head   = head_.load(std::memory_order_relaxed);
