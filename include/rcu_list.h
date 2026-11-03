@@ -105,17 +105,18 @@ bool update(const T& old_value, T new_value) {
 }
 
     std::optional<T> find(const T& value,Handle me) const {
+          std::optional<T> result;
     rcu_.read_lock(me);
         Node* cur = head_.load(std::memory_order_acquire);
         while (cur) {
             if (cur->value == value) {
-                rcu_.read_unlock(me);
-                return cur->value;
+                result=curr->val;
+                break;
             }
             cur = cur->next.load(std::memory_order_acquire);
         }
        rcu_.read_unlock(me);
-        return std::nullopt;
+        return result;
     }
 
     void for_each(std::function<void(const T&)> fn,Handle me) const {
