@@ -42,9 +42,9 @@ void run_threads(Domain& dom, int N, std::function<void(int)> fn) {
     ts.reserve(N);
     for (int i = 0; i < N; ++i)
         ts.emplace_back([&dom, &fn, i] {
-            dom.thread_register();
+            Handle me = Handle me = dom.thread_register();
             fn(i);
-            dom.thread_unregister();
+            dom.thread_unregister(me);
         });
     for (auto& t : ts) t.join();
 }
@@ -53,53 +53,53 @@ void t1_basic_read_lock() {
     section("T1: basic read_lock / read_unlock");
 
     Domain dom;
-    dom.thread_register();
+    Handle me =dom.thread_register();
     auto* s = Domain::tls_state;
 
     check(s->nesting == 0,          "nesting starts at 0");
     check(s->gp_snap == UINT64_MAX, "gp_snap starts as UINT64_MAX (idle)");
 
-    dom.read_lock();
+    dom.read_lock(me);  ;
     check(s->nesting == 1,          "nesting = 1 after read_lock");
     check(s->gp_snap != UINT64_MAX, "gp_snap set after read_lock");
 
-    dom.read_unlock();
+    dom.read_unlock(me);  ;
     check(s->nesting == 0,          "nesting = 0 after read_unlock");
     check(s->gp_snap == UINT64_MAX, "gp_snap reset to UINT64_MAX after unlock");
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 }
 
 void t2_nesting() {
     section("T2: nested read_lock");
 
     Domain dom;
-    dom.thread_register();
+    Handle me =  dom.thread_register();
     auto* s = Domain::tls_state;
 
-    dom.read_lock();
+    dom.read_lock(me);  ;
     uint64_t snap1 = s->gp_snap.load();
 
-    dom.read_lock();
+    dom.read_lock(me);  ;
     check(s->nesting == 2,                  "nesting = 2 after second lock");
     check(s->gp_snap.load() == snap1,       "gp_snap unchanged on nested lock");
 
-    dom.read_lock();
+    dom.read_lock(me);  ;
     check(s->nesting == 3,                  "nesting = 3 after third lock");
     check(s->gp_snap.load() == snap1,       "gp_snap unchanged on third lock");
 
-    dom.read_unlock();
+    dom.read_unlock(me);  ;
     check(s->nesting == 2,                  "nesting = 2 after first unlock");
     check(s->gp_snap != UINT64_MAX,         "still inside CS after first unlock");
 
-    dom.read_unlock();
+    dom.read_unlock(me);  ;
     check(s->nesting == 1,                  "nesting = 1 after second unlock");
 
-    dom.read_unlock();
+    dom.read_unlock(me);  ;
     check(s->nesting == 0,                  "nesting = 0 fully unlocked");
     check(s->gp_snap == UINT64_MAX,         "gp_snap reset after full unlock");
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 }
 
 void t3_sync_waits_for_reader() {
@@ -110,23 +110,23 @@ void t3_sync_waits_for_reader() {
     std::atomic<bool> reader_exited{false};
 
     std::thread reader([&] {
-        dom.thread_register();
-        dom.read_lock();
+        Handle me =  dom.thread_register();
+        dom.read_lock(me);  ;
         reader_inside = true;
         std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        dom.read_unlock();
+        dom.read_unlock(me);  ;
         reader_exited = true;
-        dom.thread_unregister();
+        dom.thread_unregister(me);
     });
 
     // Wait until reader is holding the lock, then time synchronize_rcu.
-    dom.thread_register();
+    Handle me =  dom.thread_register();
     while (!reader_inside) std::this_thread::yield();
     auto t0 = std::chrono::steady_clock::now();
     dom.synchronize_rcu();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now() - t0).count();
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 
     reader.join();
 
@@ -147,19 +147,19 @@ void t4_sync_waits_for_all_readers() {
     std::vector<std::thread> readers;
     for (int i = 0; i < N; ++i)
         readers.emplace_back([&] {
-            dom.thread_register();
-            dom.read_lock();
+            Handle me =  dom.thread_register();
+            dom.read_lock(me);  ;
             ++readers_inside;
             std::this_thread::sleep_for(std::chrono::milliseconds(60));
-            dom.read_unlock();
+            dom.read_unlock(me);  ;
             ++readers_exited;
-            dom.thread_unregister();
+            dom.thread_unregister(me);
         });
 
-    dom.thread_register();
+Handle me =  dom.thread_register();
     while (readers_inside.load() < N) std::this_thread::yield();
     dom.synchronize_rcu();
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 
     for (auto& r : readers) r.join();
 
@@ -177,19 +177,19 @@ void t5_new_generation_reader_does_not_block() {
     // Late reader: waits for the updater to signal it has called fetch_add,
     // THEN enters the read section. This reader is in the new generation.
     std::thread late_reader([&] {
-        dom.thread_register();
+        Handle me = dom.thread_register();
         while (!sync_started) std::this_thread::yield();
         // Small sleep to let global_gp increment propagate.
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        dom.read_lock();
+        dom.read_lock(me);  ;
         late_reader_inside = true;
         // Hold for 100ms — should NOT block the grace period.
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        dom.read_unlock();
-        dom.thread_unregister();
+        dom.read_unlock(me);  ;
+        dom.thread_unregister(me);
     });
 
-    dom.thread_register();
+    Handle me = dom.thread_register();
     // Signal the late reader just before we bump global_gp.
     // synchronize_rcu internally does fetch_add then inspects snaps,
     // so we signal here and call immediately.
@@ -198,7 +198,7 @@ void t5_new_generation_reader_does_not_block() {
     dom.synchronize_rcu();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now() - t0).count();
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 
     late_reader.join();
 
@@ -217,15 +217,15 @@ void t6_consecutive_grace_periods() {
 
     // Reader active only during GP1
     std::thread reader([&] {
-        dom.thread_register();
-        dom.read_lock();
+        Handle me =  dom.thread_register();
+        dom.read_lock(me);  ;
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
-        dom.read_unlock();
+        dom.read_unlock(me);  ;
         // Reader exits here — before GP2 starts
-        dom.thread_unregister();
+        dom.thread_unregister(me);
     });
 
-    dom.thread_register();
+    Handle me = dom.thread_register();
 
     // GP1: reader is active, should take ~40ms
     dom.synchronize_rcu();
@@ -237,7 +237,7 @@ void t6_consecutive_grace_periods() {
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now() - t0).count();
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
     reader.join();
 
     check(gp1_done.load(), "GP1 completed");
@@ -249,7 +249,7 @@ void t7_remove_unlinks() {
     section("T7: remove unlinks node");
 
     Domain dom;
-    dom.thread_register();
+    Handle me = dom.thread_register();
 
     List list;
     list.insert(10);
@@ -267,14 +267,14 @@ void t7_remove_unlinks() {
     bool removed_again = list.remove(20, dom);
     check(!removed_again,             "remove(20) second time returns false");
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 }
 
 void t8_find_missing() {
     section("T8: find returns nullopt for missing value");
 
     Domain dom;
-    dom.thread_register();
+    Handle me =  dom.thread_register();
 
     List list;
     list.insert(1);
@@ -285,14 +285,14 @@ void t8_find_missing() {
     check( list.find(2).has_value(),  "find(2) found");
     check(*list.find(3) == 3,         "find(3) value correct");
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 }
 
 void t9_insert_find() {
     section("T9: insert and find 100 values");
 
     Domain dom;
-    dom.thread_register();
+    Handle me =  dom.thread_register();
 
     List list;
     for (int i = 0; i < 100; ++i) list.insert(i);
@@ -304,7 +304,7 @@ void t9_insert_find() {
     check(all_found,               "all 100 inserted values found");
     check(list.size_unsafe() == 100, "size = 100");
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 }
 
 void t10_concurrent_inserts() {
@@ -321,11 +321,11 @@ void t10_concurrent_inserts() {
         for (int i = 0; i < PER; ++i) list.insert(base + i);
     });
 
-    dom.thread_register();
+    Handle me = dom.thread_register();
     int found = 0;
     for (int i = 0; i < THREADS * PER; ++i)
         if (list.find(i).has_value()) ++found;
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 
     check(found == THREADS * PER,
           "all " + std::to_string(THREADS * PER) + " values found, got "
@@ -350,23 +350,23 @@ void t11_concurrent_find_during_remove() {
     std::vector<std::thread> readers;
     for (int i = 0; i < READERS; ++i) {
         readers.emplace_back([&] {
-            dom.thread_register();
+            Handle me = dom.thread_register();
             while (!stop.load(std::memory_order_relaxed)) {
-                dom.read_lock();
+                dom.read_lock(me);  ;
                 // search for values the writer is cycling through
                 for (int v = 0; v < 50; ++v) {
                     auto r = list.find(v);
                     (void)r;
                 }
-                dom.read_unlock();
+                dom.read_unlock(me);  ;
             }
-            dom.thread_unregister();
+            dom.thread_unregister(me);
         });
     }
 
     // Single writer: repeatedly remove and re-insert values
     std::thread writer([&] {
-        dom.thread_register();
+        Handle me = dom.thread_register();
         auto deadline = std::chrono::steady_clock::now()
                       + std::chrono::milliseconds(DURATION);
         while (std::chrono::steady_clock::now() < deadline) {
@@ -376,7 +376,7 @@ void t11_concurrent_find_during_remove() {
             }
         }
         stop = true;
-        dom.thread_unregister();
+        dom.thread_unregister(me);
     });
 
     writer.join();
@@ -384,11 +384,11 @@ void t11_concurrent_find_during_remove() {
 
     check(!bad.load(), "no use-after-free detected during concurrent find+remove");
     // Structural check: all values should be back in the list
-    dom.thread_register();
+    Handle me = dom.thread_register();
     int found = 0;
     for (int v = 0; v < 50; ++v)
         if (list.find(v).has_value()) ++found;
-    dom.thread_unregister();
+    dom.thread_unregister(me);
     check(found == 50, "all 50 values present after cycling, found " + std::to_string(found));
 }
 ══════════════════════════════════════════════════════════════════════════
@@ -397,7 +397,7 @@ void t12_remove_positions() {
     section("T12: remove head, middle, tail nodes");
 
     Domain dom;
-    dom.thread_register();
+    Handle me = dom.thread_register();
 
     // insert builds list: 5 -> 4 -> 3 -> 2 -> 1 (head is last inserted)
     List list;
@@ -426,7 +426,7 @@ void t12_remove_positions() {
     check(list.find(4).has_value(),     "4 still present");
     check(list.find(2).has_value(),     "2 still present");
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 }
 
 struct PoisonInt {
@@ -449,20 +449,20 @@ void t13_no_use_after_free() {
     std::vector<std::thread> readers;
     for (int i = 0; i < READERS; ++i) {
         readers.emplace_back([&] {
-            dom.thread_register();
+            Handle me = dom.thread_register();
             while (!stop.load(std::memory_order_relaxed)) {
-                dom.read_lock();
+                dom.read_lock(me);  ;
                 PoisonInt* p = shared_ptr.load(std::memory_order_acquire);
                 int v = p->value.load(std::memory_order_relaxed);
-                dom.read_unlock();
+                dom.read_unlock(me);  ;
                 if (v == POISON_VAL) bad_read = true;
             }
-            dom.thread_unregister();
+            dom.thread_unregister(me);
         });
     }
 
     std::thread updater([&] {
-        dom.thread_register();
+        Handle me = dom.thread_register();
         int gen = 2;
         auto deadline = std::chrono::steady_clock::now()
                       + std::chrono::milliseconds(DURATION);
@@ -475,15 +475,15 @@ void t13_no_use_after_free() {
             delete old_p;
         }
         stop = true;
-        dom.thread_unregister();
+        dom.thread_unregister(me);
     });
 
     for (auto& r : readers) r.join();
     updater.join();
 
-    dom.thread_register();
+    Handle me = dom.thread_register();
     delete shared_ptr.load();
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 
     check(!bad_read.load(), "no reader saw POISON_VAL (no use-after-free)");
 }
@@ -507,21 +507,21 @@ void t14_reader_sees_consistent_node() {
     std::vector<std::thread> readers;
     for (int i = 0; i < READERS; ++i) {
         readers.emplace_back([&] {
-            dom.thread_register();
+            Handle me = dom.thread_register();
             while (!stop.load(std::memory_order_relaxed)) {
-                dom.read_lock();
+                dom.read_lock(me);  ;
                 auto result = list.find(MAGIC);
                 // If find returns a value it must be exactly MAGIC.
                 // A partially-written node could expose 0 or garbage.
                 if (result.has_value() && *result != MAGIC) bad = true;
-                dom.read_unlock();
+                dom.read_unlock(me);  ;
             }
-            dom.thread_unregister();
+            dom.thread_unregister(me);
         });
     }
 
     std::thread writer([&] {
-        dom.thread_register();
+        Handle me = dom.thread_register();
         auto deadline = std::chrono::steady_clock::now()
                       + std::chrono::milliseconds(DURATION);
         while (std::chrono::steady_clock::now() < deadline) {
@@ -529,7 +529,7 @@ void t14_reader_sees_consistent_node() {
             list.remove(MAGIC, dom);
         }
         stop = true;
-        dom.thread_unregister();
+        dom.thread_unregister(me);
     });
 
     writer.join();
@@ -544,16 +544,16 @@ void t15_slow_reader_unblocks_sync() {
     std::atomic<bool> reader_inside{false};
 
     std::thread reader([&] {
-        dom.thread_register();
-        dom.read_lock();
+        Handle me = dom.thread_register();
+        dom.read_lock(me);  ;
         reader_inside = true;
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        dom.read_unlock();
+        dom.read_unlock(me);  ;
         // thread_unregister must not be blocked by registry_lock
-        dom.thread_unregister();
+        dom.thread_unregister(me);
     });
 
-    dom.thread_register();
+    Handle me = dom.thread_register();
     while (!reader_inside) std::this_thread::yield();
 
     std::atomic<bool> sync_done{false};
@@ -568,7 +568,7 @@ void t15_slow_reader_unblocks_sync() {
     while (!sync_done.load() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
     syncer.join();
     reader.join();
 
@@ -582,19 +582,19 @@ void t16_register_unregister() {
     Domain dom;
 
     run_threads(dom, 4, [&](int) {
-        dom.read_lock();
-        dom.read_lock();   // nested
-        dom.read_unlock();
-        dom.read_unlock();
+        dom.read_lock(me);  ;
+        dom.read_lock(me);   // nested
+        dom.read_unlock(me);  ;
+        dom.read_unlock(me);  ;
     });
 
     // After all threads unregistered, synchronize_rcu should be fast.
-    dom.thread_register();
+    Handle me = dom.thread_register();
     auto t0 = std::chrono::steady_clock::now();
     dom.synchronize_rcu();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - t0).count();
-    dom.thread_unregister();
+    dom.thread_unregister(me);
 
     check(ms < 100,
           "synchronize_rcu fast with no active readers (" + std::to_string(ms) + "ms)");
@@ -614,25 +614,25 @@ void t17_unregister_during_sync() {
 
     // Slow reader — holds lock for 120ms
     std::thread reader([&] {
-        dom.thread_register();
-        dom.read_lock();
+        Handle me = dom.thread_register();
+        dom.read_lock(me);  ;
         reader_inside = true;
         std::this_thread::sleep_for(std::chrono::milliseconds(120));
-        dom.read_unlock();
-        dom.thread_unregister();
+        dom.read_unlock(me);  ;
+        dom.thread_unregister(me);
     });
 
     // Third thread: registers, does nothing, then unregisters while updater spins
     std::thread bystander([&] {
-        dom.thread_register();
+        Handle me = dom.thread_register();
         while (!reader_inside) std::this_thread::yield();
         // Updater has started synchronize_rcu by now (see below); try to unregister
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        dom.thread_unregister();
+        dom.thread_unregister(me);
         unregister_done = true;
     });
 
-    dom.thread_register();
+    Handle me = dom.thread_register();
     while (!reader_inside) std::this_thread::yield();
     // Start synchronize_rcu in background so we can check unregister_done
     std::atomic<bool> sync_done{false};
@@ -646,7 +646,7 @@ void t17_unregister_during_sync() {
     while (!unregister_done.load() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
-    dom.thread_unregister();
+    dom.thread_unregister(me);
     reader.join();
     bystander.join();
     updater.join();
@@ -679,17 +679,17 @@ PerfResult p1_rcu_readers(int n_threads, int dur_ms) {
     std::vector<std::thread> ts;
     for (int i = 0; i < n_threads; ++i) {
         ts.emplace_back([&] {
-            dom.thread_register();
+            Handle me = dom.thread_register();
             uint64_t count = 0;
             while (!stop.load(std::memory_order_relaxed)) {
-                dom.read_lock();
+                dom.read_lock(me);  ;
                 int v = data.load(std::memory_order_relaxed);
                 (void)v;
-                dom.read_unlock();
+                dom.read_unlock(me);  ;
                 ++count;
             }
             total.fetch_add(count, std::memory_order_relaxed);
-            dom.thread_unregister();
+            dom.thread_unregister(me);
         });
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(dur_ms));
@@ -738,21 +738,21 @@ PerfResult p2_rcu_mixed(int n_readers, int dur_ms) {
     std::vector<std::thread> ts;
     for (int i = 0; i < n_readers; ++i) {
         ts.emplace_back([&] {
-            dom.thread_register();
+            Handle me = dom.thread_register();
             uint64_t count = 0;
             while (!stop.load(std::memory_order_relaxed)) {
-                dom.read_lock();
+                dom.read_lock(me);  ;
                 int v = *data.load(std::memory_order_acquire);
                 (void)v;
-                dom.read_unlock();
+                dom.read_unlock(me);  ;
                 ++count;
             }
             read_total.fetch_add(count, std::memory_order_relaxed);
-            dom.thread_unregister();
+            dom.thread_unregister(me);
         });
     }
     ts.emplace_back([&] {
-        dom.thread_register();
+        Handle me = dom.thread_register();
         while (!stop.load(std::memory_order_relaxed)) {
             int* old = data.load(std::memory_order_relaxed);
             int* nw  = new int(*old + 1);
@@ -760,7 +760,7 @@ PerfResult p2_rcu_mixed(int n_readers, int dur_ms) {
             dom.synchronize_rcu();
             delete old;
         }
-        dom.thread_unregister();
+        dom.thread_unregister(me);
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(dur_ms));
     stop = true;
@@ -812,18 +812,18 @@ PerfResult p3_grace_period_cost(int n_readers, int dur_ms) {
     std::vector<std::thread> readers;
     for (int i = 0; i < n_readers; ++i) {
         readers.emplace_back([&] {
-            dom.thread_register();
+            Handle me = dom.thread_register();
             while (!stop.load(std::memory_order_relaxed)) {
-                dom.read_lock();
+                dom.read_lock(me);  ;
                 std::this_thread::yield();
-                dom.read_unlock();
+                dom.read_unlock(me);  ;
             }
-            dom.thread_unregister();
+            dom.thread_unregister(me);
         });
     }
 
     std::thread updater([&] {
-        dom.thread_register();
+        Handle me = dom.thread_register();
         uint64_t count = 0;
         auto deadline = std::chrono::steady_clock::now()
                       + std::chrono::milliseconds(dur_ms);
@@ -832,7 +832,7 @@ PerfResult p3_grace_period_cost(int n_readers, int dur_ms) {
             ++count;
         }
         gp_count.store(count);
-        dom.thread_unregister();
+        dom.thread_unregister(me);
     });
 
     updater.join();
@@ -873,16 +873,16 @@ void p4_scaling_sweep(int dur_ms) {
             std::vector<std::thread> ts;
             for (int i = 0; i < n; ++i)
                 ts.emplace_back([&]{
-                    dom.thread_register();
+                    Handle me = dom.thread_register();
                     uint64_t c = 0;
                     while (!stop.load(std::memory_order_relaxed)) {
-                        dom.read_lock();
+                        dom.read_lock(me);  ;
                         int v = data.load(std::memory_order_relaxed); (void)v;
-                        dom.read_unlock();
+                        dom.read_unlock(me);  ;
                         ++c;
                     }
                     total.fetch_add(c, std::memory_order_relaxed);
-                    dom.thread_unregister();
+                    dom.thread_unregister(me);
                 });
             std::this_thread::sleep_for(std::chrono::milliseconds(dur_ms));
             stop = true;
