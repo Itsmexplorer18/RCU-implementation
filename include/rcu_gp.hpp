@@ -34,15 +34,14 @@ public:
     }
 
     void thread_unregister(Handle s) {
-        assert(tls_state != nullptr);
+        assert(s != nullptr);
         std::lock_guard<std::mutex> lg(registry_lock);
-        tls_state->online = false;
-        tls_state->gp_snap.store(UINT64_MAX, std::memory_order_release);
+        s->online = false;
+        s->gp_snap.store(UINT64_MAX, std::memory_order_release);
     }
 
     void read_lock(Handle s) {
         assert(s != nullptr);
-        ThreadState* s = tls_state;
         if (s->nesting++ == 0) {
             s->snap_value = global_gp.load(std::memory_order_acquire);
             s->gp_snap.store(s->snap_value, std::memory_order_release);
@@ -51,7 +50,6 @@ public:
 
     void read_unlock(Handle s) {
         assert(s != nullptr);
-        ThreadState* s = tls_state;
         if (--s->nesting == 0)
             s->gp_snap.store(UINT64_MAX, std::memory_order_release);
     }
