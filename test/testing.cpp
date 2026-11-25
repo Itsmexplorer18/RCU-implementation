@@ -35,14 +35,16 @@ void section(const std::string& name) {
 
 using Domain = gp_rcu::RcuDomain;
 using List   = RcuList<int, Domain>;
+using Handle = Domain::Handle; 
+using ThreadState = gp_rcu::ThreadState;
 
 // Spawn N threads, each calling thread_register, fn(tid), thread_unregister.
-void run_threads(Domain& dom, int N, std::function<void(int)> fn) {
+void run_threads(Domain& dom, int N, std::function<void(int,Handle)> fn) {
     std::vector<std::thread> ts;
     ts.reserve(N);
     for (int i = 0; i < N; ++i)
         ts.emplace_back([&dom, &fn, i] {
-            Handle me = Handle me = dom.thread_register();
+            Handle me = dom.thread_register();
             fn(i);
             dom.thread_unregister(me);
         });
@@ -54,7 +56,7 @@ void t1_basic_read_lock() {
 
     Domain dom;
     Handle me =dom.thread_register();
-    auto* s = Domain::tls_state;
+    Threadstate* s=me;
 
     check(s->nesting == 0,          "nesting starts at 0");
     check(s->gp_snap == UINT64_MAX, "gp_snap starts as UINT64_MAX (idle)");
@@ -75,7 +77,7 @@ void t2_nesting() {
 
     Domain dom;
     Handle me =  dom.thread_register();
-    auto* s = Domain::tls_state;
+    Threadstate* s=me;
 
     dom.read_lock(me);  ;
     uint64_t snap1 = s->gp_snap.load();
@@ -251,20 +253,20 @@ void t7_remove_unlinks() {
     Domain dom;
     Handle me = dom.thread_register();
 
-    List list;
+    List list(dom);
     list.insert(10);
     list.insert(20);
     list.insert(30);
 
     check(list.size_unsafe() == 3,   "size = 3 after 3 inserts");
-    check(list.find(20).has_value(), "find(20) before remove");
+    check(list.find(20,me).has_value(), "find(20) before remove");
 
-    bool removed = list.remove(20, dom);
+    bool removed = list.remove(20);
     check(removed,                    "remove(20) returns true");
-    check(!list.find(20).has_value(), "find(20) after remove returns nullopt");
+    check(!list.find(20,me).has_value(), "find(20) after remove returns nullopt");
     check(list.size_unsafe() == 2,    "size = 2 after remove");
 
-    bool removed_again = list.remove(20, dom);
+    bool removed_again = list.remove(20);
     check(!removed_again,             "remove(20) second time returns false");
 
     dom.thread_unregister(me);
@@ -276,14 +278,14 @@ void t8_find_missing() {
     Domain dom;
     Handle me =  dom.thread_register();
 
-    List list;
+    List list(dom);
     list.insert(1);
     list.insert(2);
     list.insert(3);
 
-    check(!list.find(99).has_value(), "find(99) = nullopt");
-    check( list.find(2).has_value(),  "find(2) found");
-    check(*list.find(3) == 3,         "find(3) value correct");
+    check(!list.find(99,me).has_value(), "find(99) = nullopt");
+    check( list.find(2,me).has_value(),  "find(2) found");
+    check(*list.find(3,me) == 3,         "find(3) value correct");
 
     dom.thread_unregister(me);
 }
@@ -294,12 +296,12 @@ void t9_insert_find() {
     Domain dom;
     Handle me =  dom.thread_register();
 
-    List list;
+    List list(dom);
     for (int i = 0; i < 100; ++i) list.insert(i);
 
     bool all_found = true;
     for (int i = 0; i < 100; ++i)
-        if (!list.find(i).has_value()) { all_found = false; break; }
+        if (!list.find(i,me).has_value()) { all_found = false; break; }
 
     check(all_found,               "all 100 inserted values found");
     check(list.size_unsafe() == 100, "size = 100");
@@ -316,7 +318,7 @@ void t10_concurrent_inserts() {
     Domain dom;
     List   list;
 
-    run_threads(dom, THREADS, [&](int tid) {
+    run_threads(dom, THREADS, [&](int tid,Handle) {
         int base = tid * PER;
         for (int i = 0; i < PER; ++i) list.insert(base + i);
     });
@@ -324,7 +326,7 @@ void t10_concurrent_inserts() {
     Handle me = dom.thread_register();
     int found = 0;
     for (int i = 0; i < THREADS * PER; ++i)
-        if (list.find(i).has_value()) ++found;
+        if (list.find(i,me).has_value()) ++found;
     dom.thread_unregister(me);
 
     check(found == THREADS * PER,
@@ -355,7 +357,7 @@ void t11_concurrent_find_during_remove() {
                 dom.read_lock(me);  ;
                 // search for values the writer is cycling through
                 for (int v = 0; v < 50; ++v) {
-                    auto r = list.find(v);
+                    auto r = list.find(v,me);
                     (void)r;
                 }
                 dom.read_unlock(me);  ;
@@ -371,7 +373,7 @@ void t11_concurrent_find_during_remove() {
                       + std::chrono::milliseconds(DURATION);
         while (std::chrono::steady_clock::now() < deadline) {
             for (int v = 0; v < 50; ++v) {
-                list.remove(v, dom);
+                list.remove(v);
                 list.insert(v);
             }
         }
@@ -387,11 +389,10 @@ void t11_concurrent_find_during_remove() {
     Handle me = dom.thread_register();
     int found = 0;
     for (int v = 0; v < 50; ++v)
-        if (list.find(v).has_value()) ++found;
+        if (list.find(v,me).has_value()) ++found;
     dom.thread_unregister(me);
     check(found == 50, "all 50 values present after cycling, found " + std::to_string(found));
 }
-══════════════════════════════════════════════════════════════════════════
 
 void t12_remove_positions() {
     section("T12: remove head, middle, tail nodes");
@@ -400,31 +401,31 @@ void t12_remove_positions() {
     Handle me = dom.thread_register();
 
     // insert builds list: 5 -> 4 -> 3 -> 2 -> 1 (head is last inserted)
-    List list;
+    List list(dom);
     for (int i = 1; i <= 5; ++i) list.insert(i);
     // head = 5
 
     // remove head (5)
-    bool r1 = list.remove(5, dom);
+    bool r1 = list.remove(5);
     check(r1,                           "remove head (5) returns true");
-    check(!list.find(5).has_value(),    "head (5) not found after remove");
+    check(!list.find(5,me).has_value(),    "head (5) not found after remove");
     check(list.size_unsafe() == 4,      "size = 4 after head remove");
 
     // remove tail (1)
-    bool r2 = list.remove(1, dom);
+    bool r2 = list.remove(1);
     check(r2,                           "remove tail (1) returns true");
-    check(!list.find(1).has_value(),    "tail (1) not found after remove");
+    check(!list.find(1,me).has_value(),    "tail (1) not found after remove");
     check(list.size_unsafe() == 3,      "size = 3 after tail remove");
 
     // remove middle (3)
-    bool r3 = list.remove(3, dom);
+    bool r3 = list.remove(3);
     check(r3,                           "remove middle (3) returns true");
-    check(!list.find(3).has_value(),    "middle (3) not found after remove");
+    check(!list.find(3,me).has_value(),    "middle (3) not found after remove");
     check(list.size_unsafe() == 2,      "size = 2 after middle remove");
 
     // remaining: 4, 2
-    check(list.find(4).has_value(),     "4 still present");
-    check(list.find(2).has_value(),     "2 still present");
+    check(list.find(4,me).has_value(),     "4 still present");
+    check(list.find(2,me).has_value(),     "2 still present");
 
     dom.thread_unregister(me);
 }
@@ -499,7 +500,7 @@ void t14_reader_sees_consistent_node() {
     const int DURATION = 300; // ms
 
     // list contains only MAGIC values
-    List list;
+    List list(dom);
 
     std::atomic<bool> stop{false};
     std::atomic<bool> bad{false};
@@ -510,7 +511,7 @@ void t14_reader_sees_consistent_node() {
             Handle me = dom.thread_register();
             while (!stop.load(std::memory_order_relaxed)) {
                 dom.read_lock(me);  ;
-                auto result = list.find(MAGIC);
+                auto result = list.find(MAGIC,me);
                 // If find returns a value it must be exactly MAGIC.
                 // A partially-written node could expose 0 or garbage.
                 if (result.has_value() && *result != MAGIC) bad = true;
@@ -526,7 +527,7 @@ void t14_reader_sees_consistent_node() {
                       + std::chrono::milliseconds(DURATION);
         while (std::chrono::steady_clock::now() < deadline) {
             list.insert(MAGIC);
-            list.remove(MAGIC, dom);
+            list.remove(MAGIC);
         }
         stop = true;
         dom.thread_unregister(me);
