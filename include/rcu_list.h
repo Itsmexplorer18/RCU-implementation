@@ -22,7 +22,7 @@ using Handle = typename RcuImpl::Handle;
 
     ~RcuList() {
         Node* n = head_.load(std::memory_order_relaxed);
-        while (n) { Node* nx = n->next; delete n; n = nx; }
+        while (n) { n->next.load(std::memory_order_relaxed); delete n; n = nx; }
     }
 
     void insert(T value) {
@@ -31,7 +31,7 @@ using Handle = typename RcuImpl::Handle;
         Node* old_head;
         do {
             old_head   = head_.load(std::memory_order_relaxed);
-            node->next = old_head;
+            node->next = node->next.store(old_head, std::memory_order_relaxed);
         } while (!head_.compare_exchange_weak(old_head, node,
                                               std::memory_order_release,
                                               std::memory_order_relaxed));
@@ -64,10 +64,10 @@ bool remove(const T& value) {
     Node* prev = nullptr;
     Node* cur  = head_.load(std::memory_order_relaxed);
     while (cur != nullptr) {
-        Node* nxt = cur->next;
+        Node* nxt = cur->next.load(std::memory_order_relaxed);
         if (cur->value == value) {
             if (prev == nullptr)
-                head_.store(cur->next, std::memory_order_release);
+                head_.store(nxt, std::memory_order_release);
             else
                 prev->next.store(nxt, std::memory_order_release);
             ul.unlock();
@@ -76,7 +76,7 @@ bool remove(const T& value) {
             return true;
         }
         prev = cur;
-        cur  = cur->next;
+        cur  = nxt;
     }
     return false;
 }
@@ -85,7 +85,7 @@ bool update(const T& old_value, T new_value) {
     Node* prev = nullptr;
     Node* cur  = head_.load(std::memory_order_relaxed);
     while (cur != nullptr) {
-                Node* nxt = cur->next;
+        Node* nxt = cur->next.load(std::memory_order_relaxed);
 
         if (cur->value == old_value) {
             Node* new_node = new Node(std::move(new_value));
@@ -100,7 +100,7 @@ bool update(const T& old_value, T new_value) {
             return true;
         }
         prev = cur;
-        cur  = cur->next;
+        cur  = nxt;
     }
     return false;
 }
@@ -133,7 +133,9 @@ bool update(const T& old_value, T new_value) {
     size_t size_unsafe() const {
         size_t n = 0;
         Node* cur = head_.load(std::memory_order_relaxed);
-        while (cur) { ++n; cur = cur->next; }
+        while (cur) { ++n;
+cur->next.load(std::memory_order_relaxed);
+                    }
         return n;
     }
 
